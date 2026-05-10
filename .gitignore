@@ -1,0 +1,5 @@
+/reports
+/research
+__pycache__
+.env
+.cursor
