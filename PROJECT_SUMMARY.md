@@ -1,405 +1,435 @@
-# Simplified Singleton Agent System v3 - Implementation Complete
+# Omni Multi-Agent Research System - Implementation Complete
 
 ## Overview
 
-A streamlined single-agent research system has been successfully implemented with:
-- **Real Token Tracking**: Uses actual `usage.total_tokens` from OpenAI-compatible API responses
-- **State Persistence**: Saves complete agent state to JSON for later resumption
-- **Automatic Summarization**: Triggers at 80% token capacity
-- **Simplified Architecture**: Single agent, no subagent delegation
-- **Optimized Brave Search**: Direct URL fetching with pagination and freshness filters
-- **Dual Token Limits**: Separate completion and context window limits
+An intelligent multi-agent research system that conducts comprehensive topic research through subagent delegation, web search, and URL fetching. Features centralized findings management, PDF support, and incremental report generation with balanced formatting.
 
-## Latest Updates: Dual Token Limits System (May 8, 2026)
+## Core Architecture
 
-The system now implements two separate token limits for better control:
+- **Main Agent**: Orchestrates research, creates subagents, builds final report
+- **Subagents**: Parallel research workers for subtopic delegation
+- **Findings Manager**: Shared JSON database for all research findings
+- **Dual Search Tools**: Web search (Brave) + URL fetcher (BeautifulSoup + PDF)
+- **Report Builder**: Incremental section-based report generation
 
-**1. Max Completion Tokens (8192):**
-- Maximum tokens the model can **generate** in a single response
-- Controls output length per API call
-- Prevents overly long responses
+## Latest Updates (May 10, 2026)
 
-**2. Max Context Window (262000):**
-- Maximum total tokens (prompt + all completions) in the conversation
-- Controls how much conversation history can be maintained
-- Prevents exceeding model's context limit
+### PDF Text Extraction Support
+- Integrated PyMuPDF for automatic PDF text extraction
+- Detects PDF URLs and content-type headers
+- Extracts clean text from academic papers and documents
+- Handles encrypted/corrupted PDFs gracefully
 
-**Key Features:**
-- Tracks prompt and completion tokens separately
-- Validates context window before sending requests
-- Summarization triggers at 80% of context window
-- CLI support for both limits (`--max-completion-tokens`, `--max-context-window`)
+### Balanced Report Format
+- **Paragraphs** for detailed explanations
+- **Bullet points** limited to 3-7 per subsection
+- Each bullet 1-2 sentences with actual substance
+- Prevents both dense paragraphs and excessive bullets
 
-## Latest Updates: Brave API Optimization (May 8, 2026)
+### Report Output Changes
+- Reports saved to `reports/<title>.md` (not workspace folders)
+- `report_finalize` requires short title parameter
+- Findings excluded from final reports (reference only)
+- No "Total Findings" metadata in reports
 
-The system now implements optimized Brave Search API usage:
+### Content Quality Enforcement
+- All report content MUST be from research material
+- No model speculations or own knowledge
+- System prompts emphasize meaningful, relevant content only
+- 12K token limit per section
 
-**Architecture:**
+## System Components
+
+### 1. Main Agent (`src/main_agent.py`)
+
+**Responsibilities**:
+- Coordinate overall research process
+- Create and manage subagents (unlocked after 3 iterations)
+- Build incremental multi-section reports
+- Enforce query limits (5 web searches max)
+- Manage context window with automatic summarization
+
+**Key Features**:
+- Dynamic tool access based on iteration count
+- Forced report mode after 20 iterations
+- Parallel subagent execution
+- Real token tracking from API responses
+
+**Report Tools**:
+- `report_add_section`: Add sections (levels 1-6, up to 12K tokens each)
+- `report_finalize`: Finalize with title parameter, saves to `reports/<title>.md`
+
+### 2. Subagent (`src/subagent.py`)
+
+**Responsibilities**:
+- Research specific subtopics delegated by main agent
+- Return concise Q&A-style summaries (50-100 lines)
+- Save detailed findings to shared database
+
+**Lifecycle**:
+- Created by main agent with specific instructions
+- Web search limit: 3 queries
+- Forced report at iteration 17
+- Tool restriction at iteration 19 (only `generate_report`)
+- Hard cap at iteration 20
+
+**Context Management**:
+- Max context window: 150,000 tokens
+- Summarization threshold: 70%
+- Automatic summarization when near limit
+
+### 3. Findings Manager (`src/tools/findings_manager.py`)
+
+**Purpose**: Centralized JSON database for research findings
+
+**Features**:
+- Thread-safe operations with locking
+- Atomic writes to prevent corruption
+- Shared across all agents (main + subagents)
+- Stores finding ID, title, content (up to 1000 words)
+
+**File**: `research/workspaces/main_agent_<id>/findings_db.json`
+
+**Tools**:
+- `findings_write`: Save important facts
+- `findings_list`: View all finding IDs and titles
+- `findings_read`: Read specific findings (supports multiple IDs)
+
+### 4. Web Search Tool (`src/tools/web_search_tool.py`)
+
+**Brave API Integration**:
+- Limited to 5 queries for main agent, 3 for subagents
+- Returns 20 results per search (no pagination)
+- Used only for URL discovery
+- Dynamic tool removal after query limit
+
+**Features**:
+- Freshness filters (pd, pw, pm, py)
+- Country targeting
+- Language preferences
+- Safe search options
+
+### 5. URL Fetcher (`src/tools/fetch_url_tool.py`)
+
+**Content Fetching**:
+- Direct URL fetching using requests
+- HTML cleaning with BeautifulSoup
+- **PDF support** with PyMuPDF text extraction
+- Content-Type header detection
+
+**PDF Handling**:
+- Detects `.pdf` URLs and `application/pdf` content-type
+- Extracts text from all pages
+- Applies same cleaning pipeline as HTML
+- Returns formatted: `[PDF Content from {url}]\n<extracted text>`
+
+### 6. HTML Cleaner (`src/tools/html_cleaner.py`)
+
+**Text Extraction**:
+- Aggressive filtering to remove boilerplate
+- Priority content containers (main, article, section)
+- Minimum paragraph length enforcement
+- Deduplication and repetition removal
+- Maximum output length: 2,500 characters
+
+**PDF Support**:
+- `clean_pdf_content()` method using PyMuPDF
+- Handles encrypted and corrupted PDFs
+- Same cleaning pipeline as HTML
+
+### 7. Model Client (`src/api/model_client.py`)
+
+**Token Tracking**:
+- Tracks actual `prompt_tokens` from API responses
+- No accumulation - only latest context size
+- Precise context window management
+- 300-second timeout for chat calls
+
+**Key Methods**:
+- `get_current_prompt_tokens()`: Returns latest prompt token count
+- `check_context_window()`: Validates before API calls
+
+### 8. Tool Validator (`src/utils/tool_validator.py`)
+
+**Dynamic Access Control**:
+- Enforces web search query limits
+- Restricts tools based on iteration count
+- Provides informative error messages
+- Changes tool signatures dynamically
+
+### 9. Summarizer Agent (`src/summarizer_agent.py`)
+
+**Context Management**:
+- Compresses message history when near limit
+- Preserves essential research context
+- Triggers at 70-80% of context window
+- Resets token counter after summarization
+
+## Configuration
+
+`config/settings.py`:
+
+```python
+# Token Configuration
+MAX_COMPLETION_TOKENS = 12000  # Max tokens per response
+MAX_CONTEXT_WINDOW = 262000  # Max total context
+SUMMARIZATION_THRESHOLD = 0.80  # Trigger summarization at 80%
+
+# Workspace Configuration
+WORKSPACE_ROOT = "research/workspaces"
+
+# Search Configuration
+BRAVE_MAX_RESULTS_PER_REQUEST = 20
+HTML_CLEANER = 'beautifulsoup'
 ```
-Phase 1: Brave API retrieves URLs only
-    ↓
-Phase 2: Direct URL fetching (requests + BeautifulSoup)
-    ↓
-Phase 3: Clean content extraction
+
+## Research Workflow
+
+### Main Agent Flow
+
+```
+1. Initialize with topic
+   ↓
+2. Web search (up to 5 queries)
+   ↓
+3. Fetch URLs for content
+   ↓
+4. Write findings for important facts
+   ↓
+5. After iteration 3: Create subagents
+   ↓
+6. Wait for subagents to complete
+   ↓
+7. After iteration 20: Report mode
+   ↓
+8. Add report sections (report_add_section)
+   ↓
+9. Finalize with title (report_finalize)
+   ↓
+10. Save to reports/<title>.md
 ```
 
-**Benefits:**
-- Minimizes Brave API calls (only for URL discovery)
-- Content fetching doesn't use Brave quota
-- Faster execution
-- More control over content extraction
+### Subagent Flow
 
-**Advanced Features:**
-- **Pagination**: Get more than 20 results using automatic pagination
-- **Freshness Filters**: `pd` (past day), `pw` (past week), `pm` (past month), `py` (past year)
-- **Regional Targeting**: Country codes, language preferences
-- **Extra Snippets**: Up to 5 additional excerpts per result
+```
+1. Receive subtopic + instructions
+   ↓
+2. Web search (up to 3 queries)
+   ↓
+3. Fetch URLs for content
+   ↓
+4. Write findings to shared database
+   ↓
+5. After iteration 17: Force report call
+   ↓
+6. After iteration 19: Only report tool available
+   ↓
+7. Return concise Q&A summary
+   ↓
+8. Terminate
+```
 
-## Project Structure
+## Report Generation
+
+### Incremental Section-Based Approach
+
+**Why Incremental?**
+- Allows effectively unlimited report size
+- Each section gets 12K token budget
+- Model can focus on quality per section
+- Prevents timeout on massive generation
+
+**Process**:
+
+1. **`report_add_section`** (non-terminating):
+   - Parameters: `title`, `level` (1-6), `content`
+   - Adds section to internal list
+   - Continue calling until report complete
+
+2. **`report_finalize`** (terminating):
+   - Parameter: `title` (short title for filename)
+   - Assembles all sections into markdown
+   - Saves to `reports/<title>.md`
+   - Sets `research_complete = True`
+
+### Report Format Guidelines
+
+**Balanced Structure**:
+- **Paragraphs**: For detailed explanations and context
+- **Bullet Points**: Limited to 3-7 per subsection
+- **Bullet Content**: 1-2 sentences with substance
+- **Hierarchy**: Levels 1-6 for organization
+
+**Quality Enforcement**:
+- All content from research material only
+- No model speculations or prior knowledge
+- Meaningful and relevant content only
+- No filler or verbose bullet points
+
+**Example Format**:
+
+```markdown
+# Main Section Title
+
+Introduction paragraph explaining the topic in detail...
+
+## Subsection
+
+Key points:
+- First important point with actual substance
+- Second point with relevant details
+- Third point with supporting information
+
+Further explanation in paragraph form...
+```
+
+## File Structure
 
 ```
 Omni/
-├── main.py                          # Simplified CLI (no interactive mode)
+├── main.py                          # CLI entry point
 ├── requirements.txt                 # Python dependencies
-├── .env.example                     # Environment template
-├── README.md                        # Project documentation (v3)
-├── USAGE.md                         # Detailed usage guide (v3)
-├── PROJECT_SUMMARY.md              # This file
+├── .env                            # API keys
+├── README.md                       # User documentation
+├── PROJECT_SUMMARY.md             # This file
 │
 ├── config/
-│   ├── __init__.py
-│   └── settings.py                 # Configuration (v3 token settings added)
+│   └── settings.py                # Configuration
 │
 ├── src/
-│   ├── __init__.py
-│   ├── agent.py                    # Base Agent class (kept for compatibility)
-│   ├── main_agent.py               # Simplified singleton agent [UPDATED]
-│   ├── summarizer_agent.py         # History summarization [NEW]
+│   ├── main_agent.py              # Main orchestrator
+│   ├── subagent.py                # Subagent class
+│   ├── summarizer_agent.py        # Context summarization
 │   │
 │   ├── api/
-│   │   ├── model_client.py         # Enhanced with token tracking [UPDATED]
-│   │   ├── brave_search.py         # Brave Search with pagination/freshness [UPDATED]
-│   │   └── url_fetcher.py          # URL content fetching [VERIFIED]
+│   │   └── model_client.py        # LLM API client
 │   │
 │   ├── tools/
-│   │   ├── __init__.py
-│   │   ├── search_tool.py          # Brave-only with direct URL fetch [UPDATED]
-│   │   ├── file_tools.py           # Read/Write tools
-│   │   ├── report_tool.py          # Report generation
-│   │   ├── html_cleaner.py         # BeautifulSoup HTML cleaning [VERIFIED]
-│   │   ├── quality_validator.py    # Research quality validation
-│   │   └── consolidator.py         # Workspace consolidation
+│   │   ├── web_search_tool.py     # Brave web search
+│   │   ├── fetch_url_tool.py      # URL fetching + PDF
+│   │   ├── html_cleaner.py        # HTML/PDF text extraction
+│   │   ├── findings_manager.py    # JSON findings database
+│   │   ├── findings_tools.py      # Findings tools
+│   │   └── report_tool.py         # Report generation
 │   │
-│   ├── workspace/
-│   │   ├── __init__.py
-│   │   └── manager.py              # Workspace management
-│   │
-│   └── utils/                      # NEW PACKAGE
-│       ├── __init__.py
-│       ├── token_tracker.py        # Real token tracking [NEW]
-│       └── state_manager.py        # JSON state persistence [NEW]
+│   └── utils/
+│       ├── token_tracker.py       # Token tracking
+│       ├── state_manager.py       # State persistence
+│       └── tool_validator.py      # Dynamic tool access
 │
-└── research/                        # Research storage
-    └── sessions/                   # NEW - Session persistence
-        └── research_session_<uuid>.json
+├── reports/                        # Final reports
+│   └── <title>.md                 # Generated reports
+│
+└── research/
+    └── workspaces/                # Agent workspaces
+        └── main_agent_<id>/
+            └── findings_db.json   # Shared findings
 ```
 
-## Core Components
-
-### 1. Enhanced Model Client (`src/api/model_client.py`)
-
-**New Features:**
-- Tracks `usage.total_tokens` from every API response
-- Accumulates cumulative token count
-- Stores token info in response for easy access
-
-**Key Methods:**
-```python
-def chat(self, messages, **kwargs) -> Dict[str, Any]:
-    """Send chat request and track token usage."""
-    response = requests.post(self.chat_url, json=payload)
-    response_data = response.json()
-    
-    # Extract and accumulate token usage
-    if "usage" in response_data:
-        tokens_used = response_data["usage"].get("total_tokens", 0)
-        self.total_tokens_used += tokens_used
-        response_data["_tokens_used"] = tokens_used
-        response_data["_cumulative_tokens"] = self.total_tokens_used
-    
-    return response_data
-
-def get_usage(self, response) -> Dict[str, int]:
-    """Extract token usage from response."""
-    return response.get("usage", {...})
-
-def reset_token_counter(self):
-    """Reset cumulative token counter."""
-```
-
-### 2. Token Tracker (`src/utils/token_tracker.py`) [NEW]
-
-**Purpose:** Track real token counts from API responses
-
-**Features:**
-- Updates from actual API usage data
-- Monitors percentage of max tokens
-- Triggers actions at threshold (80%)
-- Tracks peak usage before summarization
-
-**Key Methods:**
-```python
-def update_usage(self, response):
-    """Update token count from API response."""
-    tokens_used = response.get("_tokens_used", 0)
-    if tokens_used == 0:
-        usage = response.get("usage", {})
-        tokens_used = usage.get("total_tokens", 0)
-    self.current_tokens += tokens_used
-
-def get_usage_percentage(self) -> float:
-    """Get current usage as percentage of max."""
-    return (self.current_tokens / self.max_tokens) * 100
-
-def is_near_limit(self) -> bool:
-    """Check if usage exceeds 80% threshold."""
-    return self.get_usage_percentage() >= 80
-
-def reset(self):
-    """Reset token counter after summarization."""
-```
-
-### 3. State Manager (`src/utils/state_manager.py`) [NEW]
-
-**Purpose:** Save and load agent state to JSON files
-
-**Features:**
-- Complete state persistence
-- Session management
-- Status tracking
-- Multiple session support
-
-**Key Methods:**
-```python
-def save_state(
-    self,
-    session_id: str,
-    message_history: List[Dict],
-    research_data: Dict,
-    status: str = "active",
-    is_summarized: bool = False,
-    total_tokens_used: int = 0
-):
-    """Save complete agent state to JSON."""
-
-def load_state(self, session_id: str) -> Optional[Dict]:
-    """Load agent state from JSON file."""
-
-def list_sessions(self) -> List[str]:
-    """List all saved session IDs."""
-
-def get_session_info(self, session_id: str) -> Optional[Dict]:
-    """Get basic session information."""
-```
-
-### 4. Summarizer Agent (`src/summarizer_agent.py`) [NEW]
-
-**Purpose:** Compress message history when approaching token limit
-
-**Features:**
-- Analyzes conversation history
-- Extracts key information
-- Creates compact summary
-- Preserves essential context
-
-**Key Methods:**
-```python
-def summarize_history(self, message_history: List[Dict]) -> str:
-    """Summarize message history into compact form."""
-
-def create_summarized_history(self, original_history) -> List[Dict]:
-    """Create new minimal history with summarized content."""
-
-def estimate_compression_ratio(self, original, summarized) -> float:
-    """Estimate compression ratio achieved."""
-```
-
-### 5. Simplified Main Agent (`src/main_agent.py`)
-
-**New Architecture:**
-- Singleton agent (no subagents)
-- Real token tracking integration
-- Automatic state persistence
-- Auto-summarization at 80%
-
-**Key Methods:**
-```python
-def __init__(self, model_client, search_tool, max_tokens=None):
-    """Initialize singleton agent with token tracking."""
-    self.max_tokens = max_tokens or MAX_TOKENS
-    self.token_tracker = TokenTracker(self.max_tokens, 0.80)
-    self.state_manager = StateManager()
-    self.summarizer = SummarizerAgent(model_client)
-    self.session_id = str(uuid.uuid4())[:8]
-
-def _call_model(self, messages) -> str:
-    """Call model and track token usage."""
-    response = self.model_client.chat(messages=messages)
-    self.token_tracker.update_usage(response)
-    
-    if self.token_tracker.is_near_limit():
-        self._summarize_history()
-    
-    return self.model_client.get_content(response)
-
-def research(self, topic: str) -> str:
-    """Execute research with token tracking and state persistence."""
-    # Research loop with automatic summarization
-    # State saved after each iteration
-    
-def _summarize_history(self):
-    """Summarize when approaching token limit."""
-    summarized = self.summarizer.create_summarized_history(...)
-    self.message_history = summarized
-    self.token_tracker.reset()
-    self.save_state(is_summarized=True)
-
-def save_state(self, **kwargs):
-    """Save current state to JSON."""
-
-@classmethod
-def load_from_session(cls, session_id, model_client, search_tool):
-    """Load agent from saved session."""
-```
-
-## State JSON Structure
-
-```json
-{
-  "session_id": "a1b2c3d4",
-  "topic": "Climate change impacts on agriculture",
-  "created_at": "2026-05-08T21:30:00",
-  "last_updated": "2026-05-08T21:45:00",
-  "agent_state": {
-    "name": "main_agent",
-    "message_history": [
-      {"role": "system", "content": "..."},
-      {"role": "user", "content": "Research this topic..."},
-      {"role": "assistant", "content": "Let me search..."},
-      {"role": "tool", "content": "Search results..."}
-    ],
-    "is_summarized": false,
-    "total_tokens_used": 5000
-  },
-  "research_data": {
-    "topic": "Climate change impacts on agriculture",
-    "subtopics": [],
-    "search_queries": ["climate change agriculture", ...],
-    "findings": [...],
-    "final_report": "# Research Report: ..."
-  },
-  "status": "completed"
-}
-```
-
-## Configuration Updates
-
-Added to [`config/settings.py`](c:\Users\sreet\OneDrive\Desktop\Omni\config\settings.py):
-
-```python
-# Token Configuration (NEW - v3)
-MAX_TOKENS = 8192  # Maximum tokens for context window
-SUMMARIZATION_THRESHOLD = 0.80  # Trigger summarization at 80% capacity
-
-# State Persistence (NEW - v3)
-STATE_STORAGE_PATH = "research/sessions"
-AUTO_SAVE_STATE = True  # Auto-save after each step
-```
-
-## Modified Files
-
-### Updated Files:
-1. [`src/api/model_client.py`](c:\Users\sreet\OneDrive\Desktop\Omni\src\api\model_client.py) - Added token tracking from API responses
-2. [`src/main_agent.py`](c:\Users\sreet\OneDrive\Desktop\Omni\src\main_agent.py) - Simplified to singleton with token tracking
-3. [`main.py`](c:\Users\sreet\OneDrive\Desktop\Omni\main.py) - Removed interactive mode, added session management
-4. [`config/settings.py`](c:\Users\sreet\OneDrive\Desktop\Omni\config\settings.py) - Added token and state settings
-5. [`README.md`](c:\Users\sreet\OneDrive\Desktop\Omni\README.md) - Updated for v3
-6. [`USAGE.md`](c:\Users\sreet\OneDrive\Desktop\Omni\USAGE.md) - Comprehensive v3 guide
-
-### New Files:
-1. `src/utils/token_tracker.py` - Real token tracking from API
-2. `src/utils/state_manager.py` - JSON state persistence
-3. `src/summarizer_agent.py` - History summarization
-4. `src/utils/__init__.py` - Utils package
-
-## Workflow with Real Token Tracking
+## Dependencies
 
 ```
-User provides research topic
-    |
-    v
-Agent initializes session
-    |
-    v
-Research loop:
-    ├── Call model API
-    ├── Get response with usage.total_tokens
-    ├── Update token tracker
-    ├── Check if > 80%
-    │   ├── Yes: Summarize history, reset counter
-    │   └── No: Continue research
-    ├── Save state to JSON
-    └── Check if complete
-    |
-    v
-Generate final report
-    |
-    v
-Save completed state
-    |
-    v
-Return report to user
+requests>=2.31.0
+python-dotenv>=1.0.0
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+PyMuPDF>=1.24.0  # PDF text extraction
 ```
+
+## API Integration
+
+### Brave Search API
+- **Endpoint**: `https://api.search.brave.com/res/v1/web/search`
+- **Free Tier**: 2,000 requests/month
+- **Usage**: Web search tool only (URL discovery)
+- **Results**: 20 per request
+
+### Local Model Server
+- **Endpoint**: `http://localhost:8016/v1`
+- **Protocol**: OpenAI-compatible API
+- **Timeout**: 300 seconds for chat
+
+## Token Management
+
+### Dual Limits System
+
+**Completion Tokens (12,000)**:
+- Maximum tokens per model response
+- Controls output length
+- Applied to each `report_add_section` call
+
+**Context Window (262,000)**:
+- Total conversation context
+- Includes all message history
+- Triggers summarization at 70-80%
+
+### Tracking Method
+- Uses actual `prompt_tokens` from API responses
+- No accumulation - tracks current context size only
+- Precise context management
+- Pre-emptive summarization at 70%, critical at 90%
+
+## Key Features
+
+✅ **Multi-Agent Architecture**: Main agent + parallel subagents  
+✅ **PDF Support**: Automatic text extraction from PDFs  
+✅ **Centralized Findings**: Shared JSON database  
+✅ **Incremental Reports**: Build section-by-section  
+✅ **Dynamic Tool Access**: Query limits and iteration-based restrictions  
+✅ **Context Management**: Automatic summarization  
+✅ **Real Token Tracking**: API-based token counts  
+✅ **Balanced Format**: Paragraphs + limited bullets  
+✅ **Quality Enforcement**: Research-only content  
+✅ **Forced Termination**: Subagents and main agent stop properly  
+
+## Quality Standards
+
+### Report Quality
+1. **Research-Based**: All content from fetched material
+2. **No Speculation**: Model knowledge excluded
+3. **Balanced Format**: Appropriate use of paragraphs and bullets
+4. **Meaningful Content**: No filler or verbose points
+5. **Proper Structure**: Hierarchical organization
+
+### Research Quality
+1. **Comprehensive Coverage**: Multiple subagents for depth
+2. **Diverse Sources**: Multiple URLs and findings
+3. **Accurate Citations**: Findings tracked with IDs
+4. **No Redundancy**: Deduplication of content
+
+## Error Handling
+
+### PDF Errors
+- Encrypted PDFs: Clear error message
+- Corrupted PDFs: Graceful fallback
+- Extraction failures: Return error without crashing
+
+### Search Errors
+- API failures: Retry with backoff
+- Connection errors: Timeout handling
+- Invalid responses: Error messages
+
+### Context Management
+- Near limit (70%): Pre-emptive summarization
+- Critical (90%): Forced summarization
+- Hard limit: Validation before API call
+
+## Testing & Validation
+
+All components tested:
+- ✅ PDF text extraction
+- ✅ Web search query limits
+- ✅ Subagent lifecycle
+- ✅ Report generation
+- ✅ Findings management
+- ✅ Context summarization
+- ✅ Tool restrictions
 
 ## Usage Examples
 
 ### Basic Research
 ```bash
-python main.py "Climate change impacts on agriculture"
-```
-
-**Output:**
-```
-Initialized research agent session: a1b2c3d4
-Max tokens: 8192
-Summarization threshold: 80.0%
-
-============================================================
-Starting research session: a1b2c3d4
-Topic: Climate change impacts on agriculture
-============================================================
-
---- Research Iteration 1 ---
-Token Usage: 500/8192 (6.1%) - Remaining: 7692
-Model response: Let me search for information...
-
---- Research Iteration 2 ---
-Token Usage: 1200/8192 (14.6%) - Remaining: 6992
-...
-
-Token Usage at 80.5%
-Triggering summarization...
-Current token usage: 6553
-Summarizing to free up context...
-Summarization complete. New token usage: 0 (reset)
-Peak usage before summarization: 6553
-
-============================================================
-Research Complete!
-Session: a1b2c3d4
-Total tokens used: 6553
-State saved to: research/sessions/research_session_a1b2c3d4.json
-============================================================
+python main.py "Reinforcement learning for day trading with tick data"
 ```
 
 ### List Sessions
@@ -409,65 +439,34 @@ python main.py --list-sessions
 
 ### Resume Session
 ```bash
-python main.py --session a1b2c3d4
+python main.py --session abc123
 ```
 
-## Testing
+## Version History
 
-All Python files syntax-validated:
-- ✅ main.py
-- ✅ src/main_agent.py
-- ✅ src/api/model_client.py
-- ✅ src/summarizer_agent.py
-- ✅ src/utils/token_tracker.py
-- ✅ src/utils/state_manager.py
-
-## v3 vs v2 Comparison
-
-| Feature | v2 | v3 |
-|---------|-----|-----|
-| Agent Structure | Main + Subagents | Singleton only |
-| Token Tracking | Estimated (char/4) | Real API counts |
-| Token Source | Approximation | usage.total_tokens |
-| State Persistence | Partial | Full JSON |
-| Session Resume | Not supported | Full support |
-| Summarization | Manual trigger | Automatic at 80% |
-| Complexity | High (delegation) | Low (single agent) |
-| Debugging | Multiple threads | Single thread |
-| Memory Usage | Higher | Lower |
-
-## Benefits of v3
-
-1. **Simpler Architecture**: Single agent, no delegation complexity
-2. **Accurate Token Tracking**: Real counts from API, no estimation
-3. **Full State Persistence**: Complete JSON state saving
-4. **Automatic Summarization**: Triggers at exact 80% threshold
-5. **Session Resume**: Load and continue from any point
-6. **Predictable Behavior**: Single conversation thread
-7. **Lower Resource Usage**: No subagent coordination overhead
-8. **Easier Debugging**: Single thread to trace
-
-## Implementation Status
-
-✅ **All v3 features implemented and tested**
-✅ **All todos completed**
-✅ **Ready for production use**
+**Current Version**: Multi-Agent System with Incremental Reports  
+**Latest Features**:
+- PDF text extraction (PyMuPDF)
+- Balanced report format
+- 12K token completion limit
+- Reports to `reports/<title>.md`
+- Findings excluded from reports
+- Research-only content enforcement
 
 ## Next Steps
 
-To start using the v3 system:
+To use the system:
 
 1. Install dependencies: `pip install -r requirements.txt`
-2. Configure API keys in `.env`
-3. Ensure local model server is running at `http://localhost:8016`
-4. Run: `python main.py "Your research topic"`
-5. Review saved sessions: `python main.py --list-sessions`
-6. Resume sessions: `python main.py --session <session_id>`
+2. Configure Brave API key in `.env`
+3. Ensure local model server running at `http://localhost:8016`
+4. Run research: `python main.py "Your topic"`
+5. View reports in `reports/` folder
 
 ---
 
-**Version:** 3.0  
-**Implementation Date:** May 8, 2026  
-**Status:** Complete and Production Ready
+**Version**: Multi-Agent System  
+**Implementation Date**: May 2026  
+**Status**: Complete and Production Ready
 
-**Key Achievement:** Real token tracking from API responses enables precise 80% threshold triggering and accurate state management.
+**Key Achievement**: Comprehensive multi-agent research with PDF support, incremental reports, and quality-enforced balanced formatting.
