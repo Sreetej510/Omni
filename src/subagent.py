@@ -57,13 +57,12 @@ class Subagent:
         
         # Initialize components
         self.max_completion_tokens = max_completion_tokens or MAX_COMPLETION_TOKENS
-        # Subagents use smaller context window (150K) to trigger summarization earlier
-        # This prevents hitting the hard 262K limit before summarization can help
-        self.max_context_window = max_context_window or 150000
+        # Subagents use the same context window as main agent (262K)
+        self.max_context_window = max_context_window or MAX_CONTEXT_WINDOW
         self.model_client = model_client
         self.web_search_tool = web_search_tool or WebSearchTool()
         self.fetch_url_tool = fetch_url_tool or FetchURLTool()
-        # Subagents summarize at 70% to stay well under the 150K limit
+        # Subagents summarize at 70% to leave room for response generation
         self.token_tracker = TokenTracker(self.max_completion_tokens, self.max_context_window, 0.70)
         self.tool_validator = ToolValidator(web_search_limit=3)  # Subagent limit: 3
         self.report_tool = ReportTool(None)
@@ -102,19 +101,69 @@ class Subagent:
 
 Instructions: {self.instructions}
 
+CRITICAL: Save EVERY important finding using add_findings tool. Be extremely thorough.
+
+AVAILABLE TOOLS:
+- web_search: Discover URLs (limit: 3 searches)
+- fetch_url: Read content from URLs (read as many as needed!)
+- add_findings: Save research findings (MUST use for EVERY important detail!)
+- findings_list: List saved findings
+- findings_read: Read saved findings
+- generate_report: Create extensive final report (TERMINATING)
+
 IMPORTANT RULES:
-- Use findings_write for EVERY important fact, detail, and source
-- You can call a maximum of 3 tool calls in a single turn, so maximize your use of them.
-- generate_report returns ONLY a concise Q&A summary
-- Be concise: report = key findings only, details go in findings_write
+- Use add_findings for EVERY important fact, detail, statistic, quote, and source
+- Save findings IMMEDIATELY after discovering them
+- Each finding can be up to 1000 words - use the full capacity!
+- Be extremely detailed: save methodology, comparisons, pros/cons, implementation details
+- Save ALL relevant URLs, references, and source information
+- You can call maximum 3 tools per turn - prioritize add_findings for important discoveries
+- generate_report creates an EXTENSIVE report with all important details
+- The report should include as many important details as possible
 
-Workflow:
-1. Discover URLs
-2. Read content from URLs
-3. findings_write to save each important fact
-4. generate_report when done (concise summary only)
+CRITICAL: PAPER/ARTICLE FINDINGS - For EVERY paper or article you read:
+- Create a SEPARATE finding for EACH paper/article
+- Use as many words as needed (up to 1000) to describe it comprehensively
+- Include ALL important details about the paper
 
-Call tools - do not just describe them!"""
+PAPER FINDING FORMAT (use this structure for each paper):
+1. **Title**: Full paper title
+2. **Research Problem**: What problem does this paper address?
+3. **Methodology**: Detailed description of methods, algorithms, approaches
+4. **Key Contributions**: What new knowledge/methods does this paper provide?
+5. **Results**: Quantitative results, performance metrics, comparisons
+6. **Strengths**: What makes this paper valuable?
+7. **Limitations**: What are the paper's weaknesses or gaps?
+8. **Relevance**: How does this relate to the research topic?
+9. **Quotes**: Important direct quotes from the paper
+10. **Code/Data**: Links to code repositories, datasets if available
+
+WORKFLOW:
+1. Use web_search (up to 3 times) to discover relevant URLs and papers
+2. Use fetch_url to read content from ALL discovered URLs, especially academic papers
+3. For EVERY important relevant paper/article you read, create a DETAILED finding:
+   - Title: "Paper: [Paper Title]" or "Article: [Article Title]"
+   - Content: Complete detailed analysis using the format above (500-1000 words)
+   - Include ALL important information, don't skip details!
+4. For other important findings (algorithms, techniques, comparisons), save separate findings
+5. Continue researching and saving findings
+6. When research is complete, call generate_report with ALL important details included
+
+FINDINGS TO SAVE (examples):
+- DETAILED PAPER FINDINGS (MOST IMPORTANT - do this for EVERY important relevant paper!)
+- Algorithm descriptions and comparisons
+- Performance metrics and statistics
+- Implementation approaches and code patterns
+- Advantages and disadvantages
+- Data preprocessing techniques
+- Feature engineering methods
+- Trading strategies and approaches
+- Risk management techniques
+- Library and framework recommendations
+- Best practices and recommendations
+- Case studies and real-world applications
+
+Call tools - do not just describe them! Be thorough and save EVERYTHING important! For papers, write as many words as needed to capture all important details!"""
     
     def research(self) -> Dict[str, Any]:
         """
@@ -132,9 +181,9 @@ Call tools - do not just describe them!"""
         })
         
         # Research loop with iteration limits
-        max_iterations = 25
-        force_report_iteration = 22
-        restrict_tools_iteration = 24
+        max_iterations = 30
+        force_report_iteration = 25
+        restrict_tools_iteration = 29
         iteration = 0
         error_occurred = None
         forced_report = False
@@ -212,16 +261,16 @@ Call tools - do not just describe them!"""
     
     def _generate_concise_report(self, error_occurred: bool) -> str:
         """
-        Generate a concise Q&A style report.
+        Generate an extensive, detailed report with all important findings.
         
-        This returns ONLY the key findings in a short format.
-        Details are saved in findings_db.json via findings_write tool.
+        This returns a comprehensive report with as many important details as possible.
+        All findings are also saved to findings_db.json via add_findings tool.
         
         Args:
             error_occurred: Whether an error occurred during research
             
         Returns:
-            Concise report string (50-100 lines max)
+            Extensive report string with all important details
         """
         if error_occurred:
             return f"ERROR: Subagent failed on subtopic '{self.subtopic}'. Error: {error_occurred}"
@@ -229,34 +278,130 @@ Call tools - do not just describe them!"""
         # Extract key information
         search_queries = self.research_findings.get("search_queries", [])
         web_queries = [q for q in search_queries if not q.startswith("URL:")]
+        url_fetches = [q for q in search_queries if q.startswith("URL:")]
         
-        # Build concise report
+        # Build extensive report
         lines = []
-        lines.append(f"SUBTOPIC: {self.subtopic}")
-        lines.append(f"QUERY: {self.instructions[:100]}...")
-        lines.append("")
-        lines.append("KEY FINDINGS:")
-        lines.append(f"- Conducted {len(web_queries)} web searches")
-        lines.append(f"- Retrieved {len(search_queries) - len(web_queries)} URLs")
-        lines.append("")
-        lines.append("IMPORTANT DISCOVERIES:")
         
-        # Add top 3-5 key findings from the research
+        # Header
+        lines.append(f"# Research Report: {self.subtopic}")
+        lines.append("")
+        lines.append(f"**Research Instructions:** {self.instructions}")
+        lines.append(f"**Total Web Searches:** {len(web_queries)}")
+        lines.append(f"**Total URLs Fetched:** {len(url_fetches)}")
+        lines.append("")
+        
+        # Executive Summary
+        lines.append("## Executive Summary")
+        lines.append("")
+        lines.append(f"This research focused on {self.subtopic}. Conducted comprehensive web research with {len(web_queries)} searches and retrieved detailed content from {len(url_fetches)} URLs. All important findings have been documented below and saved to the findings database.")
+        lines.append("")
+        
+        # Detailed Findings Section
+        lines.append("## Detailed Research Findings")
+        lines.append("")
+        
+        # Get all findings from research
         findings = self.research_findings.get("findings", [])
-        important_findings = []
-        for finding in findings[:5]:
-            if finding.get("search_type") == "Web search":
-                query = finding.get("query", "")
-                important_findings.append(f"- {query[:80]}")
         
-        if important_findings:
-            lines.extend(important_findings[:5])
+        if findings:
+            # Group findings by type
+            web_findings = [f for f in findings if f.get("search_type") == "Web search"]
+            url_findings = [f for f in findings if f.get("search_type") == "fetch_url"]
+            
+            # Web Search Results
+            if web_findings:
+                lines.append("### Web Search Discoveries")
+                lines.append("")
+                for i, finding in enumerate(web_findings, 1):
+                    query = finding.get("query", "Unknown query")
+                    results = finding.get("results", [])
+                    lines.append(f"**Search #{i}:** {query}")
+                    lines.append("")
+                    if results:
+                        for result in results[:10]:  # Show up to 10 results per search
+                            if isinstance(result, dict):
+                                title = result.get("title", "No title")
+                                snippet = result.get("snippet", "")
+                                url = result.get("url", "")
+                                lines.append(f"- **{title}**")
+                                if snippet:
+                                    lines.append(f"  - {snippet[:200]}...")
+                                if url:
+                                    lines.append(f"  - Source: {url}")
+                        lines.append("")
+            
+            # URL Content Results
+            if url_findings:
+                lines.append("### Fetched URL Content")
+                lines.append("")
+                for i, finding in enumerate(url_findings, 1):
+                    url = finding.get("query", "Unknown URL")
+                    content = finding.get("content", "")
+                    lines.append(f"**URL #{i}:** {url}")
+                    lines.append("")
+                    if content:
+                        # Truncate very long content but keep substantial details
+                        if len(content) > 2000:
+                            lines.append(content[:2000] + "... [truncated, see findings database for full content]")
+                        else:
+                            lines.append(content)
+                    lines.append("")
+            
+            # Additional Findings (from add_findings tool)
+            lines.append("### Additional Research Findings")
+            lines.append("")
+            lines.append("The following detailed findings were saved to the findings database:")
+            lines.append("")
+            
+            # Show summary of all findings
+            for i, finding in enumerate(findings, 1):
+                title = finding.get("title", f"Finding #{i}")
+                search_type = finding.get("search_type", "General research")
+                lines.append(f"**{i}. {title}** ({search_type})")
+            lines.append("")
         else:
-            lines.append("- See findings database for detailed results")
+            lines.append("No detailed findings recorded during this research session.")
+            lines.append("")
         
+        # Key Insights Section
+        lines.append("## Key Insights & Conclusions")
         lines.append("")
-        lines.append("DETAILED FINDINGS: Saved to findings_db.json via findings_write tool")
-        lines.append("REFERENCES: See findings database for all URLs and content")
+        lines.append(f"1. **Research Scope:** Comprehensive research conducted on {self.subtopic}")
+        lines.append(f"2. **Data Sources:** {len(web_queries)} web searches + {len(url_fetches)} direct URL fetches")
+        lines.append("3. **Findings Storage:** All important details saved to findings database for reference")
+        lines.append("4. **Coverage:** Multiple aspects explored through diverse search queries and sources")
+        lines.append("")
+        
+        # References Section
+        lines.append("## References & Sources")
+        lines.append("")
+        lines.append("All URLs and sources used in this research:")
+        lines.append("")
+        
+        # Collect unique URLs
+        unique_urls = set()
+        for finding in findings:
+            if finding.get("search_type") == "fetch_url":
+                url = finding.get("query", "")
+                if url:
+                    unique_urls.add(url)
+            # Also check results from web searches
+            results = finding.get("results", [])
+            for result in results:
+                if isinstance(result, dict):
+                    url = result.get("url", "")
+                    if url:
+                        unique_urls.add(url)
+        
+        for i, url in enumerate(unique_urls, 1):
+            lines.append(f"{i}. {url}")
+        lines.append("")
+        
+        lines.append("---")
+        lines.append("")
+        lines.append(f"*Report generated by Subagent {self.subagent_id}*")
+        lines.append(f"*Research conducted on: {self.subtopic}*")
         
         return "\n".join(lines)
     
@@ -382,7 +527,7 @@ Call tools - do not just describe them!"""
         NOTE: Subagents CANNOT create other subagents. They can only:
         - web_search: Research their assigned subtopic
         - fetch_url: Fetch content from URLs
-        - findings_write: Save research notes
+        - add_findings: Save research notes (can write multiple findings at once)
         - findings_list: List findings
         - findings_read: Read findings
         - generate_report: Create final report (terminating tool)
@@ -416,7 +561,7 @@ Call tools - do not just describe them!"""
         
         # Check if query limit exhausted (3 web searches max)
         web_query_count = sum(1 for q in self.research_findings.get("search_queries", []) if not q.startswith("URL:"))
-        web_search_available = web_query_count < 3
+        web_search_available = web_query_count < 2
         
         # Add web_search tool if still available
         if web_search_available:
@@ -467,21 +612,31 @@ Call tools - do not just describe them!"""
             {
                 "type": "function",
                 "function": {
-                    "name": "findings_write",
-                    "description": "Write a detailed research finding. Can write up to 1000 words per finding. Use this for ALL important information, quotes, statistics, and detailed analysis. Each fact should be a separate finding.",
+                    "name": "add_findings",
+                    "description": "Write multiple research findings at once. Each finding can be up to 1000 words. Use this for ALL important information, quotes, statistics, and detailed analysis. Each fact should be a separate finding. Pass an array of {title, content} objects.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "title": {
-                                "type": "string",
-                                "description": "Finding title/heading"
-                            },
-                            "content": {
-                                "type": "string",
-                                "description": "Finding content (up to 1000 words)"
+                            "findings": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "title": {
+                                            "type": "string",
+                                            "description": "Finding title/heading"
+                                        },
+                                        "content": {
+                                            "type": "string",
+                                            "description": "Finding content (up to 1000 words)"
+                                        }
+                                    },
+                                    "required": ["title", "content"]
+                                },
+                                "description": "Array of finding objects with title and content"
                             }
                         },
-                        "required": ["title", "content"]
+                        "required": ["findings"]
                     }
                 }
             },
@@ -592,7 +747,7 @@ Call tools - do not just describe them!"""
                     elif tool_name == "fetch_url":
                         url = arguments.get("url", "")
                         result = self._execute_fetch_url(url)
-                    elif tool_name == "findings_write":
+                    elif tool_name == "add_findings":
                         result = self._execute_findings_write(arguments)
                     elif tool_name == "findings_list":
                         result = self._execute_findings_list(arguments)
@@ -672,7 +827,7 @@ Call tools - do not just describe them!"""
     
     def _execute_write_file(self, arguments: Dict[str, Any]) -> str:
         """Execute write_file tool. (Deprecated)"""
-        return "write_file tool is deprecated. Use findings_write instead."
+        return "write_file tool is deprecated. Use add_findings instead."
     
     def _execute_read_file(self, arguments: Dict[str, Any]) -> str:
         """Execute read_file tool. (Deprecated)"""
@@ -683,10 +838,9 @@ Call tools - do not just describe them!"""
         return "ls tool is deprecated. Use findings_list instead."
     
     def _execute_findings_write(self, arguments: Dict[str, Any]) -> str:
-        """Execute findings_write tool."""
-        title = arguments.get("title", "")
-        content = arguments.get("content", "")
-        return self.findings_tools.findings_write(title, content, self.subagent_id)
+        """Execute add_findings tool."""
+        findings = arguments.get("findings", [])
+        return self.findings_tools.add_findings(findings, self.subagent_id)
     
     def _execute_findings_list(self, arguments: Dict[str, Any]) -> str:
         """Execute findings_list tool."""
@@ -787,6 +941,6 @@ Call tools - do not just describe them!"""
     def _save_findings(self) -> None:
         """
         Save research findings (deprecated - using centralized findings_db.json).
-        Subagents now use findings_write tool to save to shared database.
+        Subagents now use add_findings tool to save to shared database.
         """
-        pass  # No longer needed - findings are saved via findings_write tool
+        pass  # No longer needed - findings are saved via add_findings tool

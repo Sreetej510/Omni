@@ -75,7 +75,8 @@ class HTMLCleaner:
     # Configuration for aggressive filtering
     MIN_PARAGRAPH_LENGTH = 25  # Minimum characters per line
     MIN_CONTAINER_LENGTH = 100  # Minimum characters in container to be considered main content
-    MAX_OUTPUT_LENGTH = 2500  # Maximum total output length (~400 words)
+    MAX_OUTPUT_LENGTH = 25000  # Maximum total output length for HTML (~5K words, increased from 2500)
+    MAX_PDF_OUTPUT_LENGTH = 100000  # Maximum output length for PDFs (~20K words, no practical limit)
     
     def clean_html(self, html_content: str) -> str:
         """
@@ -178,7 +179,12 @@ class HTMLCleaner:
             full_text = self._filter_meaningful_content(full_text)
             full_text = self._remove_repetition(full_text)
             full_text = self._clean_text(full_text)
-            full_text = self._limit_output_length(full_text)
+            
+            # For PDFs, use much larger limit (or no limit)
+            if len(full_text) > self.MAX_PDF_OUTPUT_LENGTH:
+                full_text = full_text[:self.MAX_PDF_OUTPUT_LENGTH]
+                full_text = full_text.rsplit(' ', 1)[0]
+                full_text += " [... content truncated - PDF very large]"
             
             return full_text
             

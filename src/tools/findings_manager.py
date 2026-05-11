@@ -74,6 +74,49 @@ class FindingsManager:
         
         return finding_id
     
+    def add_findings_batch(self, findings: List[Dict[str, str]], agent_id: str) -> List[Dict[str, str]]:
+        """
+        Add multiple findings to the database in a single call.
+        
+        Args:
+            findings: List of {title, content} objects
+            agent_id: ID of the agent creating these findings
+            
+        Returns:
+            List of {id, title, status} results
+        """
+        results = []
+        
+        for finding_data in findings:
+            try:
+                title = finding_data.get("title", "")
+                content = finding_data.get("content", "")
+                
+                if not title or not content:
+                    results.append({
+                        "id": None,
+                        "title": title,
+                        "status": "error",
+                        "message": "Missing title or content"
+                    })
+                    continue
+                
+                finding_id = self.add_finding(title, content, agent_id)
+                results.append({
+                    "id": finding_id,
+                    "title": title,
+                    "status": "success"
+                })
+            except Exception as e:
+                results.append({
+                    "id": None,
+                    "title": finding_data.get("title", "Unknown"),
+                    "status": "error",
+                    "message": str(e)
+                })
+        
+        return results
+    
     def list_findings(self) -> List[Dict]:
         """
         List all findings (ID and title only, no content).

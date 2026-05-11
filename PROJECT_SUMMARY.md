@@ -1,163 +1,195 @@
-# Omni Multi-Agent Research System - Implementation Complete
+# Omni Multi-Agent Research System
 
 ## Overview
 
-An intelligent multi-agent research system that conducts comprehensive topic research through subagent delegation, web search, and URL fetching. Features centralized findings management, PDF support, and incremental report generation with balanced formatting.
+Omni is an intelligent multi-agent research system designed for comprehensive topic research. It uses a **pure coordinator** architecture where the main agent solely delegates research to parallel subagents, who handle all web research, academic paper analysis, and detailed findings collection.
 
 ## Core Architecture
 
-- **Main Agent**: Orchestrates research, creates subagents, builds final report
-- **Subagents**: Parallel research workers for subtopic delegation
-- **Findings Manager**: Shared JSON database for all research findings
-- **Dual Search Tools**: Web search (Brave) + URL fetcher (BeautifulSoup + PDF)
-- **Report Builder**: Incremental section-based report generation
+### Pure Coordinator Pattern
 
-## Latest Updates (May 10, 2026)
+The system follows strict separation of concerns:
 
-### PDF Text Extraction Support
-- Integrated PyMuPDF for automatic PDF text extraction
-- Detects PDF URLs and content-type headers
-- Extracts clean text from academic papers and documents
-- Handles encrypted/corrupted PDFs gracefully
-
-### Balanced Report Format
-- **Paragraphs** for detailed explanations
-- **Bullet points** limited to 3-7 per subsection
-- Each bullet 1-2 sentences with actual substance
-- Prevents both dense paragraphs and excessive bullets
-
-### Report Output Changes
-- Reports saved to `reports/<title>.md` (not workspace folders)
-- `report_finalize` requires short title parameter
-- Findings excluded from final reports (reference only)
-- No "Total Findings" metadata in reports
-
-### Content Quality Enforcement
-- All report content MUST be from research material
-- No model speculations or own knowledge
-- System prompts emphasize meaningful, relevant content only
-- 12K token limit per section
+- **Main Agent**: Pure orchestrator - creates subagents, reads findings, writes reports
+- **Subagents**: Research workers - handle ALL web search, URL fetching, and findings
+- **Findings Manager**: Centralized thread-safe JSON database
+- **Search Tools**: Unified Brave (web) + OpenAlex (academic) search
 
 ## System Components
 
 ### 1. Main Agent (`src/main_agent.py`)
 
-**Responsibilities**:
-- Coordinate overall research process
-- Create and manage subagents (unlocked after 3 iterations)
-- Build incremental multi-section reports
-- Enforce query limits (5 web searches max)
-- Manage context window with automatic summarization
+**Role**: Pure coordinator with no web research capabilities
 
-**Key Features**:
-- Dynamic tool access based on iteration count
-- Forced report mode after 20 iterations
-- Parallel subagent execution
-- Real token tracking from API responses
+**Available Tools** (all from iteration 1):
+- `create_subagent` - Delegate research to subagents
+- `add_findings` - Save observations
+- `findings_list` - List all findings
+- `findings_read` - Read specific findings (single or array)
+- `report_add_section` - Add report sections (levels 1-3)
+- `report_finalize` - Finalize and save report
 
-**Report Tools**:
-- `report_add_section`: Add sections (levels 1-6, up to 12K tokens each)
-- `report_finalize`: Finalize with title parameter, saves to `reports/<title>.md`
+**Workflow**:
+1. Analyze topic → identify 3-5 distinct subtopics
+2. Create subagents in parallel with detailed task instructions
+3. Read findings from completed subagents
+4. Synthesize findings into multi-section report
+5. Call `report_finalize` with title
+
+**Properties**:
+- Max iterations: 50 (safety cap)
+- No tool call limit (unlimited parallel execution)
+- Single unified system prompt
+- Automatic context summarization at 70-80%
 
 ### 2. Subagent (`src/subagent.py`)
 
-**Responsibilities**:
-- Research specific subtopics delegated by main agent
-- Return concise Q&A-style summaries (50-100 lines)
-- Save detailed findings to shared database
+**Role**: Research worker with full search capabilities
+
+**Available Tools**:
+- `web_search` - Brave + OpenAlex unified (3 query limit)
+- `fetch_url` - HTML/PDF/Sci-Hub fetcher
+- `add_findings` - Save detailed findings (up to 1000 words)
+- `findings_list` / `findings_read` - Review findings
+- `generate_report` - Create extensive final report (terminating)
 
 **Lifecycle**:
-- Created by main agent with specific instructions
+- Created by main agent with specific task
 - Web search limit: 3 queries
-- Forced report at iteration 17
-- Tool restriction at iteration 19 (only `generate_report`)
-- Hard cap at iteration 20
+- Force report at iteration 25
+- Tool restriction (only `generate_report`) at iteration 29
+- Hard cap at iteration 30
+- Max 3 tool calls per turn
+- Max context: 262K tokens, summarize at 70%
 
-**Context Management**:
-- Max context window: 150,000 tokens
-- Summarization threshold: 70%
-- Automatic summarization when near limit
+**Detailed Paper Finding Format** (13 points):
+For every paper read, subagents create findings with:
+1. Title
+2. Authors and affiliations
+3. Publication details
+4. DOI/URL
+5. Research problem
+6. Methodology
+7. Key contributions
+8. Results
+9. Strengths
+10. Limitations
+11. Relevance to subtopic
+12. Important quotes
+13. Code/data links
 
 ### 3. Findings Manager (`src/tools/findings_manager.py`)
 
-**Purpose**: Centralized JSON database for research findings
+**Purpose**: Centralized thread-safe JSON database
 
 **Features**:
-- Thread-safe operations with locking
-- Atomic writes to prevent corruption
+- `threading.Lock()` for thread-safety
+- Atomic writes (`os.replace()`) prevent corruption
 - Shared across all agents (main + subagents)
-- Stores finding ID, title, content (up to 1000 words)
+- Up to 1000 words per finding
+- Batch operations: `add_findings_batch()`, multi-ID `findings_read`
 
-**File**: `research/workspaces/main_agent_<id>/findings_db.json`
-
-**Tools**:
-- `findings_write`: Save important facts
-- `findings_list`: View all finding IDs and titles
-- `findings_read`: Read specific findings (supports multiple IDs)
+**File Location**: `research/workspaces/main_agent_<id>/findings_db.json`
 
 ### 4. Web Search Tool (`src/tools/web_search_tool.py`)
 
-**Brave API Integration**:
-- Limited to 5 queries for main agent, 3 for subagents
-- Returns 20 results per search (no pagination)
-- Used only for URL discovery
-- Dynamic tool removal after query limit
+**Unified Search**: Single `query` parameter searches BOTH:
+- **Brave Search** - General web URLs
+- **OpenAlex** - Academic papers via semantic search
 
-**Features**:
-- Freshness filters (pd, pw, pm, py)
-- Country targeting
-- Language preferences
-- Safe search options
+**OpenAlex Features**:
+- Endpoint: `search.semantic` for meaning-based search
+- Returns up to 50 papers per search
+- Supports long descriptive queries
 
-### 5. URL Fetcher (`src/tools/fetch_url_tool.py`)
+**Returned Paper Metadata**:
+- `title`
+- `pdf_url` (if open access)
+- `abstract` (reconstructed from inverted index)
+- `year`
+- `doi`
 
-**Content Fetching**:
-- Direct URL fetching using requests
-- HTML cleaning with BeautifulSoup
-- **PDF support** with PyMuPDF text extraction
-- Content-Type header detection
+### 5. Fetch URL Tool (`src/tools/fetch_url_tool.py`)
 
-**PDF Handling**:
-- Detects `.pdf` URLs and `application/pdf` content-type
-- Extracts text from all pages
-- Applies same cleaning pipeline as HTML
-- Returns formatted: `[PDF Content from {url}]\n<extracted text>`
+**Smart Routing**:
 
-### 6. HTML Cleaner (`src/tools/html_cleaner.py`)
+```
+URL Input
+    │
+    ├── Is DOI URL? → Convert to Sci-Hub URL → Fetch
+    ├── Is .pdf URL? → Direct PDF fetch (PyMuPDF)
+    ├── Is academic URL? → Check Content-Type
+    │     ├── PDF? → Direct PDF fetch
+    │     └── HTML? → Fetch via OpenAlex API
+    └── Regular URL → Standard HTML fetch
+```
 
-**Text Extraction**:
-- Aggressive filtering to remove boilerplate
-- Priority content containers (main, article, section)
-- Minimum paragraph length enforcement
-- Deduplication and repetition removal
-- Maximum output length: 2,500 characters
+**Detection Methods**:
+- `_is_pdf_url()` - Checks `.pdf` extension
+- `_check_if_pdf_content()` - HEAD request for `Content-Type: application/pdf`
+- `_looks_like_academic_pdf()` - URL patterns (arxiv.org, springer.com, etc.)
+- `_is_doi_url()` - DOI pattern detection
+
+**Sci-Hub Integration**:
+- Auto-converts DOI URLs to `https://sci-hub.ru/<doi_url>`
+- Provides access to paywalled papers
+
+**Batch Fetching**:
+- `fetch_urls_batch()` - Up to 5 URLs in parallel using threading
+- Combined formatted output
+
+### 6. Academic Search Client (`src/api/academic_search.py`)
+
+**OpenAlex API Wrapper**:
+- Semantic search via `search.semantic` endpoint
+- Up to 50 results per search
+- API key support for higher rate limits
+
+**Rate Limit Handling**:
+- Detects 429 (Too Many Requests) errors
+- Honors `Retry-After` header if present
+- Falls back to exponential backoff (15s, 30s, 60s)
+- Retries up to 3 times before giving up
+
+Applied to all methods: `search_papers()`, `get_pdf_url()`, `get_paper_by_doi()`
+
+### 7. HTML Cleaner (`src/tools/html_cleaner.py`)
+
+**Aggressive Filtering**:
+- Removes boilerplate (nav, footer, ads, scripts)
+- Priority content containers (main, article, section, body)
+- Minimum paragraph length filtering
+- Boilerplate pattern matching
+- Deduplication
+
+**Output Limits**:
+- HTML content: 25,000 characters
+- PDF content: 100,000 characters
 
 **PDF Support**:
-- `clean_pdf_content()` method using PyMuPDF
-- Handles encrypted and corrupted PDFs
+- `clean_pdf_content()` using PyMuPDF
+- Handles encrypted/corrupted PDFs gracefully
 - Same cleaning pipeline as HTML
 
-### 7. Model Client (`src/api/model_client.py`)
+### 8. Model Client (`src/api/model_client.py`)
 
 **Token Tracking**:
 - Tracks actual `prompt_tokens` from API responses
-- No accumulation - only latest context size
-- Precise context window management
+- No accumulation - tracks current context size only
 - 300-second timeout for chat calls
+- 3 retry attempts on failures
 
-**Key Methods**:
-- `get_current_prompt_tokens()`: Returns latest prompt token count
-- `check_context_window()`: Validates before API calls
+**Key Method**:
+- `get_current_prompt_tokens()` - Returns latest count for precise context management
 
-### 8. Tool Validator (`src/utils/tool_validator.py`)
+### 9. Tool Validator (`src/utils/tool_validator.py`)
 
 **Dynamic Access Control**:
-- Enforces web search query limits
-- Restricts tools based on iteration count
-- Provides informative error messages
-- Changes tool signatures dynamically
+- Subagent web search limit: 3 queries
+- Returns informative error messages
+- Generic signature error when limits exceeded
 
-### 9. Summarizer Agent (`src/summarizer_agent.py`)
+### 10. Summarizer Agent (`src/summarizer_agent.py`)
 
 **Context Management**:
 - Compresses message history when near limit
@@ -171,16 +203,20 @@ An intelligent multi-agent research system that conducts comprehensive topic res
 
 ```python
 # Token Configuration
-MAX_COMPLETION_TOKENS = 12000  # Max tokens per response
-MAX_CONTEXT_WINDOW = 262000  # Max total context
+MAX_COMPLETION_TOKENS = 12000   # Max tokens per response
+MAX_CONTEXT_WINDOW = 262000     # Max total context
 SUMMARIZATION_THRESHOLD = 0.80  # Trigger summarization at 80%
 
-# Workspace Configuration
+# Workspace
 WORKSPACE_ROOT = "research/workspaces"
 
-# Search Configuration
-BRAVE_MAX_RESULTS_PER_REQUEST = 20
-HTML_CLEANER = 'beautifulsoup'
+# Model
+MODEL_BASE_URL = "http://localhost:8016/v1"
+
+# Search
+BRAVE_SEARCH_API_KEY = "..."     # From .env
+OPENALEX_API_KEY = "..."         # From .env
+OPENALEX_BASE_URL = "https://api.openalex.org"
 ```
 
 ## Research Workflow
@@ -188,61 +224,55 @@ HTML_CLEANER = 'beautifulsoup'
 ### Main Agent Flow
 
 ```
-1. Initialize with topic
+1. Receive topic
    ↓
-2. Web search (up to 5 queries)
+2. Analyze topic → identify subtopics
    ↓
-3. Fetch URLs for content
+3. Create 3-5 subagents in parallel (with specific tasks)
    ↓
-4. Write findings for important facts
+4. Wait for subagents to complete (parallel execution)
    ↓
-5. After iteration 3: Create subagents
+5. Read findings (findings_list + findings_read)
    ↓
-6. Wait for subagents to complete
+6. Synthesize into multi-section report
    ↓
-7. After iteration 20: Report mode
+7. Call report_add_section repeatedly
    ↓
-8. Add report sections (report_add_section)
+8. Call report_finalize with title
    ↓
-9. Finalize with title (report_finalize)
-   ↓
-10. Save to reports/<title>.md
+9. Save to reports/<title>.md
 ```
 
 ### Subagent Flow
 
 ```
-1. Receive subtopic + instructions
+1. Receive subtopic + task instructions
    ↓
-2. Web search (up to 3 queries)
+2. web_search (up to 3 queries) - Brave + OpenAlex
    ↓
-3. Fetch URLs for content
+3. fetch_url for ALL discovered URLs (batch when possible)
    ↓
-4. Write findings to shared database
+4. For EACH paper: Save detailed finding (13-point format)
    ↓
-5. After iteration 17: Force report call
+5. Continue researching and saving findings
    ↓
-6. After iteration 19: Only report tool available
+6. At iteration 25: Force report mode
    ↓
-7. Return concise Q&A summary
+7. At iteration 29: Restrict to generate_report only
    ↓
-8. Terminate
+8. Call generate_report with extensive details
+   ↓
+9. Return extensive report to main agent
 ```
 
 ## Report Generation
 
 ### Incremental Section-Based Approach
 
-**Why Incremental?**
-- Allows effectively unlimited report size
-- Each section gets 12K token budget
-- Model can focus on quality per section
-- Prevents timeout on massive generation
-
 **Process**:
 
 1. **`report_add_section`** (non-terminating):
-   - Parameters: `title`, `level` (1-6), `content`
+   - Parameters: `title`, `level` (1-3), `content`
    - Adds section to internal list
    - Continue calling until report complete
 
@@ -254,34 +284,22 @@ HTML_CLEANER = 'beautifulsoup'
 
 ### Report Format Guidelines
 
-**Balanced Structure**:
-- **Paragraphs**: For detailed explanations and context
-- **Bullet Points**: Limited to 3-7 per subsection
-- **Bullet Content**: 1-2 sentences with substance
-- **Hierarchy**: Levels 1-6 for organization
+**Structure**:
+- Maximum 5-7 main sections
+- Heading levels 1-3 ONLY (no level 4+)
+- Each section meaningful and relevant only
+
+**Format**:
+- Prefer paragraphs over bullets
+- Bullets: 3-5 max per subsection
+- Each bullet 1-2 substantive sentences
+- Focus on synthesis, not listing every detail
 
 **Quality Enforcement**:
-- All content from research material only
-- No model speculations or prior knowledge
-- Meaningful and relevant content only
+- ALL content from research findings
+- NO model speculations or own knowledge
 - No filler or verbose bullet points
-
-**Example Format**:
-
-```markdown
-# Main Section Title
-
-Introduction paragraph explaining the topic in detail...
-
-## Subsection
-
-Key points:
-- First important point with actual substance
-- Second point with relevant details
-- Third point with supporting information
-
-Further explanation in paragraph form...
-```
+- Avoid redundant headings
 
 ## File Structure
 
@@ -289,7 +307,8 @@ Further explanation in paragraph form...
 Omni/
 ├── main.py                          # CLI entry point
 ├── requirements.txt                 # Python dependencies
-├── .env                            # API keys
+├── .env                            # API keys (gitignored)
+├── .env.example                    # API key template
 ├── README.md                       # User documentation
 ├── PROJECT_SUMMARY.md             # This file
 │
@@ -297,33 +316,36 @@ Omni/
 │   └── settings.py                # Configuration
 │
 ├── src/
-│   ├── main_agent.py              # Main orchestrator
-│   ├── subagent.py                # Subagent class
+│   ├── main_agent.py              # Pure coordinator
+│   ├── subagent.py                # Research worker
 │   ├── summarizer_agent.py        # Context summarization
 │   │
 │   ├── api/
-│   │   └── model_client.py        # LLM API client
+│   │   ├── model_client.py        # LLM API client
+│   │   └── academic_search.py     # OpenAlex client (with retry)
 │   │
 │   ├── tools/
-│   │   ├── web_search_tool.py     # Brave web search
-│   │   ├── fetch_url_tool.py      # URL fetching + PDF
+│   │   ├── web_search_tool.py     # Brave + OpenAlex unified
+│   │   ├── fetch_url_tool.py      # HTML/PDF/Sci-Hub fetcher
 │   │   ├── html_cleaner.py        # HTML/PDF text extraction
-│   │   ├── findings_manager.py    # JSON findings database
-│   │   ├── findings_tools.py      # Findings tools
-│   │   └── report_tool.py         # Report generation
+│   │   ├── findings_manager.py    # Thread-safe JSON DB
+│   │   ├── findings_tools.py      # Findings tool interface
+│   │   └── report_tool.py         # Report formatting
 │   │
 │   └── utils/
 │       ├── token_tracker.py       # Token tracking
 │       ├── state_manager.py       # State persistence
-│       └── tool_validator.py      # Dynamic tool access
+│       ├── tool_validator.py      # Dynamic tool access
+│       └── url_tracker.py         # URL source tracking
 │
 ├── reports/                        # Final reports
 │   └── <title>.md                 # Generated reports
 │
 └── research/
-    └── workspaces/                # Agent workspaces
+    ├── sessions/                  # Session state files
+    └── workspaces/
         └── main_agent_<id>/
-            └── findings_db.json   # Shared findings
+            └── findings_db.json   # Shared findings DB
 ```
 
 ## Dependencies
@@ -341,13 +363,30 @@ PyMuPDF>=1.24.0  # PDF text extraction
 ### Brave Search API
 - **Endpoint**: `https://api.search.brave.com/res/v1/web/search`
 - **Free Tier**: 2,000 requests/month
-- **Usage**: Web search tool only (URL discovery)
+- **Used by**: Subagents only (3 queries each)
+- **Auth**: `X-Subscription-Token` header
 - **Results**: 20 per request
+
+### OpenAlex API
+- **Endpoint**: `https://api.openalex.org`
+- **Search**: `/works?search.semantic={query}&per_page=50`
+- **Auth**: `Authorization: Bearer <key>` + `api_key` query param
+- **Rate Limits** (Free tier with API key):
+  - List+filter: 10,000 calls/day
+  - Search: 1,000 calls/day
+  - Content download: 100 calls/day
+- **Retry Logic**: Automatic on 429 with Retry-After header
+
+### Sci-Hub
+- **URL Pattern**: `https://sci-hub.ru/<doi_url>`
+- **Auto-Conversion**: Triggered for any DOI URL
+- **Purpose**: Access paywalled papers
 
 ### Local Model Server
 - **Endpoint**: `http://localhost:8016/v1`
 - **Protocol**: OpenAI-compatible API
 - **Timeout**: 300 seconds for chat
+- **Retries**: 3 attempts on failure
 
 ## Token Management
 
@@ -356,46 +395,53 @@ PyMuPDF>=1.24.0  # PDF text extraction
 **Completion Tokens (12,000)**:
 - Maximum tokens per model response
 - Controls output length
-- Applied to each `report_add_section` call
+- Applied to each call
 
-**Context Window (262,000)**:
-- Total conversation context
-- Includes all message history
+**Context Window**:
+- Main agent: 262,000 tokens
+- Subagents: 262,000 tokens
 - Triggers summarization at 70-80%
 
 ### Tracking Method
 - Uses actual `prompt_tokens` from API responses
 - No accumulation - tracks current context size only
-- Precise context management
 - Pre-emptive summarization at 70%, critical at 90%
 
-## Key Features
+## Capabilities
 
-✅ **Multi-Agent Architecture**: Main agent + parallel subagents  
-✅ **PDF Support**: Automatic text extraction from PDFs  
-✅ **Centralized Findings**: Shared JSON database  
-✅ **Incremental Reports**: Build section-by-section  
-✅ **Dynamic Tool Access**: Query limits and iteration-based restrictions  
-✅ **Context Management**: Automatic summarization  
-✅ **Real Token Tracking**: API-based token counts  
-✅ **Balanced Format**: Paragraphs + limited bullets  
-✅ **Quality Enforcement**: Research-only content  
-✅ **Forced Termination**: Subagents and main agent stop properly  
+- **Pure Coordinator Architecture**: Main agent only orchestrates
+- **Parallel Subagents**: Multiple subagents research simultaneously
+- **Unified Search**: Brave + OpenAlex with single query
+- **Sci-Hub Integration**: DOI URLs auto-routed
+- **PDF Support**: Automatic text extraction with PyMuPDF
+- **Smart PDF Detection**: Multiple detection methods
+- **Rate Limit Handling**: 429 retry with Retry-After
+- **Batch URL Fetching**: Up to 5 URLs in parallel
+- **Detailed Paper Findings**: 13-point format, up to 1000 words
+- **Extensive Subagent Reports**: Comprehensive details
+- **Centralized Findings**: Thread-safe JSON database
+- **Incremental Reports**: Build section-by-section
+- **Context Management**: Automatic summarization
+- **Real Token Tracking**: API-based token counts
+- **Balanced Format**: Paragraphs + limited bullets
+- **Quality Enforcement**: Research-only content
+- **No Tool Limits**: Main agent has unlimited parallel execution
 
 ## Quality Standards
 
 ### Report Quality
 1. **Research-Based**: All content from fetched material
 2. **No Speculation**: Model knowledge excluded
-3. **Balanced Format**: Appropriate use of paragraphs and bullets
-4. **Meaningful Content**: No filler or verbose points
-5. **Proper Structure**: Hierarchical organization
+3. **Balanced Format**: Appropriate paragraphs and bullets
+4. **Meaningful Content**: No filler points
+5. **Proper Structure**: Hierarchical organization (levels 1-3)
+6. **Synthesis Focus**: Not just listing details
 
-### Research Quality
-1. **Comprehensive Coverage**: Multiple subagents for depth
-2. **Diverse Sources**: Multiple URLs and findings
-3. **Accurate Citations**: Findings tracked with IDs
-4. **No Redundancy**: Deduplication of content
+### Subagent Findings Quality
+1. **Detailed Papers**: 13-point format for every paper
+2. **Comprehensive**: Up to 1000 words per finding
+3. **Immediate Saving**: Save findings as discovered
+4. **All Important Data**: Methods, results, comparisons, quotes
 
 ## Error Handling
 
@@ -405,68 +451,56 @@ PyMuPDF>=1.24.0  # PDF text extraction
 - Extraction failures: Return error without crashing
 
 ### Search Errors
-- API failures: Retry with backoff
-- Connection errors: Timeout handling
-- Invalid responses: Error messages
+- **OpenAlex 429**: Auto-retry with Retry-After or exponential backoff
+- **API failures**: Retry with backoff (3 attempts)
+- **Connection errors**: Timeout handling
+- **Invalid responses**: Error messages
 
 ### Context Management
 - Near limit (70%): Pre-emptive summarization
 - Critical (90%): Forced summarization
 - Hard limit: Validation before API call
 
-## Testing & Validation
+### Findings Database
+- Concurrent writes: `threading.Lock()` prevents conflicts
+- File corruption: Atomic writes via `os.replace()`
+- JSON errors: Graceful recovery with backup
 
-All components tested:
-- ✅ PDF text extraction
-- ✅ Web search query limits
-- ✅ Subagent lifecycle
-- ✅ Report generation
-- ✅ Findings management
-- ✅ Context summarization
-- ✅ Tool restrictions
-
-## Usage Examples
+## Usage
 
 ### Basic Research
 ```bash
 python main.py "Reinforcement learning for day trading with tick data"
 ```
 
-### List Sessions
-```bash
-python main.py --list-sessions
+### Output Example
+```
+Initialized research agent session: a1b2c3d4
+Max completion tokens: 12000
+Max context window: 262000
+
+[Iteration 1/50] Context: 1500/262000 (0.6%)
+Model is calling 3 tool(s)...
+[Executing 3 subagent(s) in parallel]
+
+[Subagent 1] Creating subagent for: RL_Algorithms
+[Subagent 2] Creating subagent for: Tick_Data_Processing
+[Subagent 3] Creating subagent for: Optuna_Tuning
+
+[SA a1b2c3d4] Iteration 1/30 | Queries: 0
+[SA a1b2c3d4] [Tool] web_search
+[SA a1b2c3d4] Query #1: reinforcement learning algorithms day trading
+...
+
+Report finalized: 7 sections saved to reports/rl_daytrading_tickdata.md
 ```
 
-### Resume Session
-```bash
-python main.py --session abc123
-```
-
-## Version History
-
-**Current Version**: Multi-Agent System with Incremental Reports  
-**Latest Features**:
-- PDF text extraction (PyMuPDF)
-- Balanced report format
-- 12K token completion limit
-- Reports to `reports/<title>.md`
-- Findings excluded from reports
-- Research-only content enforcement
-
-## Next Steps
-
-To use the system:
+## Setup
 
 1. Install dependencies: `pip install -r requirements.txt`
-2. Configure Brave API key in `.env`
+2. Configure API keys in `.env`:
+   - `BRAVE_SEARCH_API_KEY` (from brave.com/search/api/)
+   - `OPENALEX_API_KEY` (from openalex.org/settings/api)
 3. Ensure local model server running at `http://localhost:8016`
 4. Run research: `python main.py "Your topic"`
 5. View reports in `reports/` folder
-
----
-
-**Version**: Multi-Agent System  
-**Implementation Date**: May 2026  
-**Status**: Complete and Production Ready
-
-**Key Achievement**: Comprehensive multi-agent research with PDF support, incremental reports, and quality-enforced balanced formatting.

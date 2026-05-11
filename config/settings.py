@@ -38,6 +38,10 @@ BRAVE_SAFE_SEARCH = "moderate"  # 'off', 'moderate', 'strict'
 BRAVE_ENABLE_PAGINATION = True  # Enable automatic pagination for more results
 BRAVE_DEFAULT_SEARCH_LANG = "en"  # Content language preference
 
+# Academic Search Configuration (OpenAlex)
+OPENALEX_BASE_URL = "https://api.openalex.org"  # OpenAlex API base URL
+OPENALEX_API_KEY = os.getenv("OPENALEX_API_KEY", None)  # OpenAlex API key for higher rate limits
+
 # Quality Configuration
 MIN_REFERENCES_DYNAMIC = True  # Dynamic threshold based on topic
 MIN_REFERENCES_DEFAULT = 5  # Default minimum per subagent

@@ -13,6 +13,7 @@ from src.tools.findings_tools import FindingsTools
 from src.utils.token_tracker import TokenTracker
 from src.utils.state_manager import StateManager
 from src.utils.tool_validator import ToolValidator
+from src.utils.url_tracker import URLSourceTracker
 from src.summarizer_agent import SummarizerAgent
 from src.subagent import Subagent
 from config.settings import MAX_COMPLETION_TOKENS, MAX_CONTEXT_WINDOW, SUMMARIZATION_THRESHOLD, STATE_STORAGE_PATH, WORKSPACE_ROOT
@@ -49,8 +50,18 @@ class MainAgent:
         self.max_completion_tokens = max_completion_tokens or MAX_COMPLETION_TOKENS
         self.max_context_window = max_context_window or MAX_CONTEXT_WINDOW
         self.model_client = model_client
-        self.web_search_tool = web_search_tool or WebSearchTool()
-        self.fetch_url_tool = fetch_url_tool or FetchURLTool()
+        
+        # Initialize URL source tracker
+        self.url_tracker = URLSourceTracker()
+        
+        # Initialize tools with URL tracker
+        self.web_search_tool = web_search_tool or WebSearchTool(
+            url_tracker=self.url_tracker
+        )
+        self.fetch_url_tool = fetch_url_tool or FetchURLTool(
+            url_tracker=self.url_tracker
+        )
+        
         self.token_tracker = TokenTracker(self.max_completion_tokens, self.max_context_window, SUMMARIZATION_THRESHOLD)
         self.state_manager = StateManager(STATE_STORAGE_PATH)
         self.tool_validator = ToolValidator(web_search_limit=5)  # Main agent limit: 5
@@ -94,7 +105,7 @@ class MainAgent:
             "final_report": None
         }
         
-        # Initialize with system message (initial version without subagents)
+        # Initialize with system message
         self.message_history.append({
             "role": "system",
             "content": self._get_system_prompt()
@@ -106,187 +117,119 @@ class MainAgent:
         print(f"Summarization threshold: {SUMMARIZATION_THRESHOLD * 100}%")
         print(f"Workspace: {self.workspace}")
     
-    def _update_system_prompt_for_subagents(self) -> None:
-        """Update system prompt to include subagent information."""
-        # Replace the system message (first message)
-        if self.message_history and self.message_history[0].get("role") == "system":
-            self.message_history[0]["content"] = self._get_system_prompt_with_subagents()
-    
     def _get_system_prompt(self) -> str:
-        """Get system prompt for the agent - initial version (before subagents available)."""
+        """Get unified system prompt for the main agent."""
         return """You are a research coordinator. Research: {topic}
 
-Available tools: web_search, fetch_url, findings_write, findings_list, findings_read, report_add_section, report_finalize
+CRITICAL: You do NOT do web_search or fetch_url yourself. Subagents handle ALL web research.
 
-IMPORTANT RULES:
-- Use findings_write for EVERY important fact and detail
-- web_search is costly (limit 5) - use fetch_url to read URLs
-- Build multi-section reports using report_add_section (call MANY times)
-- Each section should be meaningful and relevant only
-- Use levels 1-6 for hierarchy (1=top section, 2=subsection, 3=sub-subsection)
-- Call report_finalize ONLY after ALL sections are written (provide a short title for filename)
-- ALL report content MUST be from research material - NO speculations or own knowledge
-- BALANCED FORMAT: Use paragraphs for explanations, bullet points for key lists
-- Limit bullets to 3-7 per subsection, focus on essential points only
-- Each bullet should be 1-2 sentences with actual substance
+YOUR ROLE:
+- Create subagents to research subtopics
+- Read findings from subagents
+- Synthesize findings into comprehensive report
 
-Workflow:
-1. Discover URLs
-2. Read content from URLs
-3. findings_write to save each important fact
-4. report_add_section (multiple times) to build multi-level report
-5. report_finalize with a short title when ALL sections complete
+AVAILABLE TOOLS:
+- create_subagent: Delegate research to subagents (use this extensively!)
+- add_findings: Save important observations (can write multiple at once)
+- findings_list: List all findings (ID and title only)
+- findings_read: Read one or more findings by ID
+- report_add_section: Add sections to final report (levels 1-3 only)
+- report_finalize: Finalize and save report (requires title)
 
-Call tools - do not just describe them!"""
-    
-    def _get_system_prompt_with_subagents(self) -> str:
-        """Get system prompt for the agent - version with subagent access."""
-        return """You are a research coordinator. Delegate subtopics to subagents.
+WORKFLOW:
+1. Analyze the topic and identify 3-5 distinct subtopics
+2. Create subagents for each subtopic with VERY SPECIFIC instructions
+3. Subagents will research in parallel (they will web_search, fetch_url, add_findings)
+4. Read all findings with findings_list/findings_read
+5. Synthesize findings into comprehensive multi-section report
+6. Call report_finalize with a short title when complete
 
-IMPORTANT RULES:
-- Subagents return CONCISE Q&A summaries (not long reports)
-- All details saved via findings_write by agents/subagents
-- Build multi-section reports using report_add_section (call MANY times)
-- Each section should be meaningful and relevant only
-- Use levels 1-6 for hierarchy (1=top section, 2=subsection, etc.)
-- Call report_finalize ONLY after ALL sections are written (provide a short title for filename)
-- ALL report content MUST be from research material - NO speculations or own knowledge
-- BALANCED FORMAT: Use paragraphs for explanations, bullet points for key lists
-- Limit bullets to 3-7 per subsection, focus on essential points only
-- Each bullet should be 1-2 sentences with actual substance
+REPORT FORMAT:
+- 5-7 main sections maximum
+- Use levels 1-3 ONLY (1=title, 2=main section, 3=subsection)
+- Prefer paragraphs over bullets
+- If using bullets: 3-5 max per subsection, 1-2 substantive sentences each
+- Focus on SYNTHESIS, not listing every detail
+- ALL content MUST be from research findings - NO speculations
 
-Workflow:
-1. Discover URLs
-2. Read content from URLs
-2. findings_write to save important facts
-3. create_subagent for each subtopic (with specific instructions)
-4. Subagents research in parallel, write to shared findings_db
-5. Read subagent summaries with findings_list/findings_read
-6. report_add_section (multiple times) to write multi-level final report
-7. report_finalize with a short title when ALL sections complete
-
-When calling create_subagent:
-- subtopic: SPECIFIC, descriptive name
-- instructions: DETAILED what to research
+CRITICAL RULES:
+- Do NOT attempt web_search or fetch_url - subagents do this
+- Create MULTIPLE subagents (3-5) for comprehensive coverage
+- Each subagent needs specific, detailed task description
+- Subagents handle all web research, PDF fetching, and findings
+- Your value is in coordination, synthesis, and report writing
+- Read findings BEFORE writing report to understand what was discovered
 
 Call tools - do not just describe them!"""
     
     def _get_tools_definition(self) -> List[Dict[str, Any]]:
         """
-        Get tool definitions for the model - dynamic based on iteration and query count.
+        Get tool definitions for the model - simplified for subagent coordination only.
         
-        Dynamic:
-        - After 5 web_search calls, web_search tool is removed entirely.
-        - After 20 iterations, ONLY report_add_section and report_finalize are available (forced report mode).
+        Available tools:
+        - create_subagent: Available from iteration 1
+        - add_findings, findings_list, findings_read: Available always
+        - report_add_section, report_finalize: Available always
+        - web_search, fetch_url: REMOVED (subagents handle this)
         
         Returns:
             List of tool definitions in OpenAI tool format
         """
-        # Force report mode after 20 iterations - only report tools available
-        if self.current_iteration > 20:
-            return [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "report_add_section",
-                        "description": "Add a section to the final report. Call this MANY times to build a comprehensive multi-level report. Each section should be meaningful and relevant only. Use level 1-6 for hierarchy. Content MUST be from research only - no speculations. BALANCED FORMAT: paragraphs for explanations, bullets for key lists (3-7 max, 1-2 sentences each). NOT terminating - continue calling until report is complete, then call report_finalize.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "title": {"type": "string", "description": "Section heading text"},
-                                "level": {"type": "integer", "description": "Heading level 1-6", "minimum": 1, "maximum": 6},
-                                "content": {"type": "string", "description": "Section content in markdown - meaningful content from research only, no speculations. Use balanced format: paragraphs for explanations, bullet points for key lists (limit 3-7 bullets, 1-2 sentences each)"}
-                            },
-                            "required": ["title", "level", "content"]
-                        }
-                    }
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "report_finalize",
-                        "description": "TERMINATING: Finalize and save the complete report. Call this ONLY AFTER all sections are added. Requires a short title for the report file.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "title": {"type": "string", "description": "Short title for the report (used as filename)"}
-                            },
-                            "required": ["title"]
-                        }
-                    }
-                }
-            ]
-        
         tools = []
         
-        # Check if query limit exhausted (5 web searches max)
-        query_count = len(self.research_data.get("search_queries", []))
-        web_search_available = query_count < 5
-        
-        # Add web_search tool if still available
-        if web_search_available:
-            tools.append({
-                "type": "function",
-                "function": {
-                    "name": "web_search",
-                    "description": "COSTLY: Use sparingly to discover URLs only. Returns titles, snippets, and URLs - NOT full content. After getting URLs, ALWAYS use fetch_url to read actual content. Limited to 5 searches.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "Search query string"
-                            },
-                            "freshness": {
-                                "type": "string",
-                                "description": "Time filter: 'pd' (past day), 'pw' (past week), 'pm' (past month), 'py' (past year)",
-                                "enum": ["pd", "pw", "pm", "py"]
-                            }
-                        },
-                        "required": ["query"]
-                    }
-                }
-            })
-        
-        # Always add fetch_url tool
+        # Add subagent tools - available from iteration 1
         tools.append({
             "type": "function",
             "function": {
-                "name": "fetch_url",
-                "description": "Fetch and clean content from a URL. Use this to read web pages.",
+                "name": "create_subagent",
+                "description": "Create a subagent to research a specific subtopic. Use this to delegate ALL web research. Subagents will handle web_search, fetch_url, and add_findings. Main agent only coordinates and synthesizes.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "url": {
+                        "name": {
                             "type": "string",
-                            "description": "Direct URL to fetch content from"
+                            "description": "The specific subtopic name for the subagent"
+                        },
+                        "task": {
+                            "type": "string",
+                            "description": "Detailed instructions for what the subagent should research. Be very specific with focus areas, search targets, and expected outputs."
                         }
                     },
-                    "required": ["url"]
+                    "required": ["name", "task"]
                 }
             }
         })
         
-        # Add findings tools
+        # Add findings and report tools
         tools.extend([
             {
                 "type": "function",
                 "function": {
-                    "name": "findings_write",
-                    "description": "Write a detailed research finding. Can write up to 1000 words per finding. Use this for ALL important information, quotes, statistics, and detailed analysis. Each fact should be a separate finding.",
+                    "name": "add_findings",
+                    "description": "Write multiple research findings at once. Each finding can be up to 1000 words. Use this for ALL important information, quotes, statistics, and detailed analysis. Each fact should be a separate finding. Pass an array of {title, content} objects.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "title": {
-                                "type": "string",
-                                "description": "Finding title/heading"
-                            },
-                            "content": {
-                                "type": "string",
-                                "description": "Finding content (up to 1000 words)"
+                            "findings": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "title": {
+                                            "type": "string",
+                                            "description": "Finding title/heading"
+                                        },
+                                        "content": {
+                                            "type": "string",
+                                            "description": "Finding content (up to 1000 words)"
+                                        }
+                                    },
+                                    "required": ["title", "content"]
+                                },
+                                "description": "Array of finding objects with title and content"
                             }
                         },
-                        "required": ["title", "content"]
+                        "required": ["findings"]
                     }
                 }
             },
@@ -323,23 +266,23 @@ Call tools - do not just describe them!"""
                 "type": "function",
                 "function": {
                     "name": "report_add_section",
-                    "description": "Add a section to the final report. Call this MANY times to build a comprehensive multi-level report. Each section should be meaningful and relevant only. Use level 1-6 for hierarchy (1=top section, 2=subsection, etc.). Content MUST be from research only - no speculations. BALANCED FORMAT: paragraphs for explanations, bullets for key lists (3-7 max, 1-2 sentences each). NOT terminating - continue calling until report is complete.",
+                    "description": "Add a section to the final report. Build a focused report with 5-7 main sections. Each section must be meaningful and relevant ONLY from research - no speculations. HEADING LEVELS: Use 1-3 ONLY (1=title, 2=main sections, 3=subsections). NO level 4+. FORMAT: Prefer paragraphs over bullets. If using bullets, limit to 3-5 per subsection, each bullet 1-2 substantive sentences. Avoid redundant headings. Focus on SYNTHESIS not listing every detail. NOT terminating - continue until report is complete, then call report_finalize.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "title": {
                                 "type": "string",
-                                "description": "Section heading text"
+                                "description": "Section heading text - concise and descriptive"
                             },
                             "level": {
                                 "type": "integer",
-                                "description": "Heading level 1-6 (1=top-level section, 2=subsection, 3=sub-subsection, etc.)",
+                                "description": "Heading level 1-3 ONLY (1=title, 2=main section, 3=subsection)",
                                 "minimum": 1,
-                                "maximum": 6
+                                "maximum": 3
                             },
                             "content": {
                                 "type": "string",
-                                "description": "Section content in markdown format - meaningful content from research only, no speculations. Use balanced format: paragraphs for explanations, bullet points for key lists (limit 3-7 bullets, 1-2 sentences each)"
+                                "description": "Section content from research only - no speculations. Prefer paragraphs. If using bullets: 3-5 max, 1-2 substantive sentences each. Avoid excessive detail - focus on synthesis."
                             }
                         },
                         "required": ["title", "level", "content"]
@@ -361,31 +304,6 @@ Call tools - do not just describe them!"""
                 }
             }
         ])
-        
-        # Add subagent tools only after 3 iterations (available at iteration 4)
-        if self.current_iteration >= 4 and not self.subagent_tools_unlocked:
-            self.subagent_tools_unlocked = True
-            tools.insert(0, {
-                "type": "function",
-                "function": {
-                    "name": "create_subagent",
-                    "description": "Create a subagent to research a specific subtopic. NOW AVAILABLE! Use this to delegate deep research on subtopics.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "subtopic": {
-                                "type": "string",
-                                "description": "The specific subtopic for the subagent to research"
-                            },
-                            "instructions": {
-                                "type": "string",
-                                "description": "Detailed instructions for what the subagent should research"
-                            }
-                        },
-                        "required": ["subtopic", "instructions"]
-                    }
-                }
-            })
         
         return tools
     
@@ -592,20 +510,30 @@ Call tools - do not just describe them!"""
         except Exception as e:
             return f"Web search error: {str(e)}"
     
-    def _execute_fetch_url(self, url: str) -> str:
+    def _execute_fetch_url(self, url) -> str:
         """
         Execute the fetch_url tool.
         
         Args:
-            url: URL to fetch
+            url: Single URL (string) or multiple URLs (array)
             
         Returns:
             Fetched and cleaned content
         """
         try:
-            result = self.fetch_url_tool.fetch_url(url)
-            return result
+            # Handle both single URL and batch mode
+            if isinstance(url, str):
+                # Single URL
+                result = self.fetch_url_tool.fetch_url(url)
+                return result
+            elif isinstance(url, list):
+                # Batch mode - fetch multiple URLs in parallel
+                result = self.fetch_url_tool.fetch_urls_batch(url, max_urls=5)
+                return result
+            else:
+                return "Error: url must be a string or array of strings"
         except Exception as e:
+            return f"Error executing fetch_url: {str(e)}"
             return f"URL fetch error: {str(e)}"
     
     def _execute_write_file(self, filepath: str, content: str) -> str:
@@ -627,10 +555,9 @@ Call tools - do not just describe them!"""
         return "ls tool is deprecated. Use findings_list instead."
     
     def _execute_findings_write(self, arguments: Dict[str, Any]) -> str:
-        """Execute findings_write tool."""
-        title = arguments.get("title", "")
-        content = arguments.get("content", "")
-        return self.findings_tools.findings_write(title, content, self.session_id)
+        """Execute add_findings tool."""
+        findings = arguments.get("findings", [])
+        return self.findings_tools.add_findings(findings, self.session_id)
     
     def _execute_findings_list(self, arguments: Dict[str, Any]) -> str:
         """Execute findings_list tool."""
@@ -729,26 +656,9 @@ Call tools - do not just describe them!"""
         # Execute the appropriate tool
         result = ""
         try:
-            if function_name == "web_search":
-                query = args.get("query", "")
-                freshness = args.get("freshness")
-                
-                # Increment counter AFTER successful validation
-                self.tool_validator.increment_web_search()
-                
-                # Track query usage
-                self.research_data["search_queries"].append(query)
-                query_count = len(self.research_data["search_queries"])
-                print(f"[Main] Query #{query_count}: {query[:60]}...")
-                
-                result = self._execute_web_search(query, freshness)
-            elif function_name == "fetch_url":
-                url = args.get("url", "")
-                result = self._execute_fetch_url(url)
-            elif function_name == "findings_write":
-                title = args.get("title", "")
-                content = args.get("content", "")
-                result = self._execute_findings_write({"title": title, "content": content})
+            if function_name == "add_findings":
+                findings = args.get("findings", [])
+                result = self._execute_findings_write({"findings": findings})
             elif function_name == "findings_list":
                 result = self._execute_findings_list({})
             elif function_name == "findings_read":
@@ -756,12 +666,13 @@ Call tools - do not just describe them!"""
                 result = self._execute_findings_read({"finding_ids": finding_ids})
             elif function_name == "report_add_section":
                 title = args.get("title", "")
-                level = max(1, min(6, args.get("level", 2)))
+                level = max(1, min(3, args.get("level", 2)))  # Limit to level 3 max
                 content = args.get("content", "")
                 self.report_sections.append({"title": title, "level": level, "content": content})
                 self.in_report_mode = True
                 n = len(self.report_sections)
-                result = f"Section #{n} added: '{title}' (level {level}, {len(content)} chars). Continue with report_add_section or call report_finalize when complete."
+                level_desc = {1: "Title", 2: "Main Section", 3: "Subsection"}
+                result = f"Section #{n} added: '{title}' (level {level} - {level_desc.get(level, 'Unknown')}, {len(content)} chars). Continue with report_add_section or call report_finalize when complete."
             elif function_name == "report_finalize":
                 title = args.get("title", "")
                 if not title:
@@ -819,12 +730,30 @@ Call tools - do not just describe them!"""
             # Parse arguments
             try:
                 import json
-                args = json.loads(arguments) if isinstance(arguments, str) else arguments
-            except:
+                if isinstance(arguments, str):
+                    args = json.loads(arguments)
+                elif isinstance(arguments, dict):
+                    args = arguments
+                else:
+                    args = {}
+                
+                # Debug: print raw arguments
+                print(f"[DEBUG] Raw arguments type: {type(arguments)}")
+                print(f"[DEBUG] Parsed args: {args}")
+            except Exception as parse_error:
+                print(f"[ERROR] Failed to parse arguments: {str(parse_error)}")
+                print(f"[ERROR] Arguments value: {arguments}")
                 args = {}
             
-            subtopic = args.get("subtopic", "")
-            instructions = args.get("instructions", "")
+            # Extract subtopic and instructions (using correct parameter names)
+            subtopic = args.get("name", "")
+            instructions = args.get("task", "")
+            
+            # Validate required fields
+            if not subtopic or not instructions:
+                print(f"[ERROR] Missing required fields!")
+                print(f"[ERROR] name: '{subtopic}'")
+                print(f"[ERROR] task: '{instructions}'")
             
             try:
                 print(f"[Subagent {index}] Creating subagent for: {subtopic}")
@@ -896,14 +825,6 @@ Call tools - do not just describe them!"""
         tool_calls = self.model_client.get_tool_calls(response)
         
         if tool_calls:
-            # Model wants to call tools
-            original_count = len(tool_calls)
-            
-            # Limit to max 3 tool calls
-            if original_count > 3:
-                print(f"\n[Tool Limit] Limiting {original_count} tools to max 3")
-                tool_calls = tool_calls[:3]
-            
             print(f"\nModel is calling {len(tool_calls)} tool(s)...")
             
             # Add assistant message with tool calls to history (only the limited ones)
@@ -994,45 +915,19 @@ Call tools - do not just describe them!"""
         
         # Initialize iteration counter
         self.current_iteration = 0
-        self.subagent_tools_unlocked = False
         
-        # Iteration limits
-        research_phase_max = 20  # After 20 iterations, ONLY report tools available
-        report_phase_max = 50    # Hard cap on report-writing iterations (safety net)
-        forced_report_message_sent = False
+        # Hard iteration cap for safety
+        max_iterations = 50
         
         # Research loop
         while True:
             self.current_iteration += 1
-            query_count = len(self.research_data.get("search_queries", []))
             context_pct = (self.model_client.get_current_prompt_tokens() / self.max_context_window) * 100
             
-            # Display iteration label based on phase
-            if self.current_iteration > research_phase_max:
-                phase_label = f"REPORT {self.current_iteration - research_phase_max}/{report_phase_max - research_phase_max}"
-                sections_count = len(self.report_sections)
-                print(f"\n[Iteration {self.current_iteration} | {phase_label}] Sections: {sections_count} | Context: {self.model_client.get_current_prompt_tokens()}/{self.max_context_window} ({context_pct:.1f}%)")
-            else:
-                print(f"\n[Iteration {self.current_iteration}/{research_phase_max}] Queries: {query_count} | Context: {self.model_client.get_current_prompt_tokens()}/{self.max_context_window} ({context_pct:.1f}%)")
-            
-            # At iteration 21, append a forcing user message (only once)
-            if self.current_iteration == research_phase_max + 1 and not forced_report_message_sent:
-                forced_report_message_sent = True
-                print(f"[Research phase complete - forcing report mode at iteration {self.current_iteration}]")
-                self.message_history.append({
-                    "role": "user",
-                    "content": "Research phase complete. You MUST now write the final report using report_add_section (one section at a time, with hierarchy levels 1-6). Each section should be meaningful and relevant only from research - no speculations. BALANCED FORMAT: Use paragraphs for explanations, bullet points for key lists (limit 3-7 bullets per subsection, 1-2 sentences each). Build a comprehensive multi-section report. Then call report_finalize with a SHORT TITLE for the report filename. Call report_finalize ONLY after ALL sections are written."
-                })
-            
-            # Notify when subagent tools become available
-            if self.current_iteration == 4 and not self.subagent_tools_unlocked:
-                print("[Subagent tools unlocked]")
-                # Update system prompt to include subagent information
-                self._update_system_prompt_for_subagents()
-                self.subagent_tools_unlocked = True
+            # Display iteration status
+            print(f"\n[Iteration {self.current_iteration}/{max_iterations}] Context: {self.model_client.get_current_prompt_tokens()}/{self.max_context_window} ({context_pct:.1f}%)")
             
             # Check if near context limit BEFORE calling model
-            # Use actual prompt tokens from model client (tracked from API responses)
             context_pct = (self.model_client.get_current_prompt_tokens() / self.max_context_window) * 100
             print(f"[Context Check] Tokens: {self.model_client.get_current_prompt_tokens()}/{self.max_context_window} ({context_pct:.1f}%)")
             
@@ -1059,9 +954,9 @@ Call tools - do not just describe them!"""
                 print("Research complete. Report finalized.")
                 break
             
-            # Hard cap on total iterations (research_phase_max + report writing budget)
-            if self.current_iteration >= report_phase_max:
-                print(f"[Hard iteration cap ({report_phase_max}) reached - forcing exit]")
+            # Hard cap on total iterations
+            if self.current_iteration >= max_iterations:
+                print(f"[Hard iteration cap ({max_iterations}) reached - forcing exit]")
                 # If we have sections but no finalize was called, save what we have
                 if self.report_sections and not self.research_complete:
                     print(f"[Auto-finalizing with {len(self.report_sections)} sections]")

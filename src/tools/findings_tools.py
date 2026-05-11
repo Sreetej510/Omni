@@ -9,20 +9,46 @@ class FindingsTools:
     def __init__(self, findings_manager: FindingsManager):
         self.findings_manager = findings_manager
     
-    def findings_write(self, title: str, content: str, agent_id: str = "agent") -> str:
+    def add_findings(self, findings, agent_id: str = "agent") -> str:
         """
-        Write a detailed research finding. Can write up to 1000 words per finding. Use this for ALL important information, quotes, statistics, and detailed analysis. Each fact should be a separate finding.
+        Write multiple research findings at once. Can write up to 1000 words per finding. 
+        Use this for ALL important information, quotes, statistics, and detailed analysis. 
+        Each fact should be a separate finding.
         
         Args:
-            title: Finding title/heading
-            content: Finding content (up to 1000 words)
-            agent_id: ID of the agent writing this finding
+            findings: Single {title, content} object OR array of {title, content} objects
+            agent_id: ID of the agent writing these findings
             
         Returns:
-            Finding ID
+            Formatted results of all findings
         """
-        finding_id = self.findings_manager.add_finding(title, content, agent_id)
-        return f"Finding written with ID: {finding_id}"
+        # Handle both single finding and batch mode
+        if isinstance(findings, dict):
+            # Single finding - convert to batch
+            findings = [findings]
+        
+        if not isinstance(findings, list):
+            return "Error: findings must be an object or array of objects"
+        
+        # Process batch
+        results = self.findings_manager.add_findings_batch(findings, agent_id)
+        
+        # Format results
+        output = []
+        success_count = 0
+        error_count = 0
+        
+        for result in results:
+            if result["status"] == "success":
+                success_count += 1
+                output.append(f"✓ Finding written: {result['title']} (ID: {result['id']})")
+            else:
+                error_count += 1
+                error_msg = result.get("message", "Unknown error")
+                output.append(f"✗ Failed: {result['title']} - {error_msg}")
+        
+        summary = f"\nBatch complete: {success_count} successful, {error_count} failed"
+        return "\n".join(output) + summary
     
     def findings_list(self) -> str:
         """
